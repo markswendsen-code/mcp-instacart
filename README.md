@@ -1,5 +1,9 @@
 # @striderlabs/mcp-instacart
 
+[![npm](https://img.shields.io/npm/v/@striderlabs/mcp-instacart)](https://www.npmjs.com/package/@striderlabs/mcp-instacart)
+[![MCP Registry](https://img.shields.io/badge/MCP-Registry-blue)](https://registry.modelcontextprotocol.io/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+
 MCP server that gives AI agents the ability to search products, manage cart, and place grocery orders on Instacart.
 
 Built by [Strider Labs](https://striderlabs.ai) — building the action layer for AI agents.
@@ -207,7 +211,7 @@ Some actions may trigger CAPTCHA. You'll need to:
 
 ```bash
 # Clone the repo
-git clone https://github.com/striderlabs/mcp-instacart
+git clone https://github.com/markswendsen-code/mcp-instacart
 cd mcp-instacart
 
 # Install dependencies
@@ -231,4 +235,4 @@ MIT
 
 - [Strider Labs](https://striderlabs.ai)
 - [MCP Protocol](https://modelcontextprotocol.io)
-- [GitHub Issues](https://github.com/striderlabs/mcp-instacart/issues)
+- [GitHub Issues](https://github.com/markswendsen-code/mcp-instacart/issues)
