@@ -20,7 +20,8 @@
     "strider",
     "model-context-protocol",
     "browser-automation",
-    "playwright"
+    "patchright",
+    "stealth"
   ],
   "author": "Strider Labs <hello@striderlabs.ai>",
   "license": "MIT",
@@ -31,7 +32,7 @@
   "homepage": "https://striderlabs.ai",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "playwright": "^1.40.0"
+    "patchright": "^1.58.2"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

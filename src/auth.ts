@@ -7,7 +7,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import type { BrowserContext, Cookie } from "playwright";
+import type { BrowserContext, Cookie } from "patchright";
 
 const CONFIG_DIR = path.join(os.homedir(), ".strider", "instacart");
 const COOKIES_FILE = path.join(CONFIG_DIR, "cookies.json");

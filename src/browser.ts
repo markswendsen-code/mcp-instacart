@@ -4,7 +4,7 @@
  * Playwright-based browser automation for Instacart operations.
  */
 
-import { chromium, Browser, BrowserContext, Page } from "playwright";
+import { chromium, Browser, BrowserContext, Page } from "patchright";
 import {
   saveCookies,
   loadCookies,
@@ -15,7 +15,8 @@ import {
 } from "./auth.js";
 
 const INSTACART_BASE_URL = "https://www.instacart.com";
-const DEFAULT_TIMEOUT = 30000;
+const DEFAULT_TIMEOUT = 60000;
+const NAVIGATION_TIMEOUT = 45000;
 
 // Singleton browser instance
 let browser: Browser | null = null;
@@ -72,6 +73,9 @@ async function initBrowser(): Promise<{ browser: Browser; context: BrowserContex
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
+      "--disable-web-security",
+      "--disable-features=IsolateOrigins,site-per-process",
+      "--disable-site-isolation-trials",
     ],
   });
 
@@ -121,43 +125,48 @@ export async function checkLoginStatus(): Promise<SessionInfo> {
   const { page, context } = await initBrowser();
 
   try {
-    await page.goto(INSTACART_BASE_URL, { waitUntil: "networkidle", timeout: DEFAULT_TIMEOUT });
+    await page.goto(INSTACART_BASE_URL, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
+    await page.waitForTimeout(2000);
 
-    // Look for indicators of logged-in state
-    // Instacart shows account icon or user menu when logged in
-    const accountButton = await page.$('[data-testid="account-button"], [aria-label*="Account"], [data-testid="user-menu"]');
+    // Look for "Log in" button - its presence means NOT logged in
+    // Current Instacart DOM: button with text "Log in"
+    const signInButton = await page.$('button:has-text("Log in")');
     
-    // Also check for sign-in prompts (indicates not logged in)
-    const signInButton = await page.$('button:has-text("Log in"), button:has-text("Sign in"), a:has-text("Log in")');
-    
-    const isLoggedIn = accountButton !== null && signInButton === null;
+    const isLoggedIn = signInButton === null;
 
-    // Try to get user email if logged in
+    // Try to get user email if logged in by checking the account menu
     let userEmail: string | undefined;
-    if (isLoggedIn && accountButton) {
-      await accountButton.click();
-      await page.waitForTimeout(1000);
-      const emailElement = await page.$('[data-testid="user-email"], .user-email');
-      if (emailElement) {
-        userEmail = await emailElement.textContent() || undefined;
+    if (isLoggedIn) {
+      // Look for account/profile button (usually shows user initial or icon when logged in)
+      const accountButton = await page.$('button[aria-label*="Account"], button[aria-label*="account"], [aria-label*="profile"]');
+      if (accountButton) {
+        await accountButton.click();
+        await page.waitForTimeout(1000);
+        // Look for email in the dropdown
+        const emailElement = await page.$('[aria-label*="email"], [class*="email"]');
+        if (emailElement) {
+          userEmail = await emailElement.textContent() || undefined;
+        }
+        await page.keyboard.press("Escape");
       }
-      // Close menu by clicking elsewhere
-      await page.keyboard.press("Escape");
     }
 
-    // Get current store/zip if visible
-    const addressElement = await page.$('[data-testid="address-display"], [aria-label*="delivery address"]');
-    const zipCode = addressElement ? await addressElement.textContent() || undefined : undefined;
-
-    const storeElement = await page.$('[data-testid="store-name"], .store-name');
-    const storeName = storeElement ? await storeElement.textContent() || undefined : undefined;
+    // Get current address/zip - look for the address button
+    // Current pattern: button "current address: 95008. Or select a new address."
+    const addressButton = await page.$('button[aria-label*="address"]');
+    let zipCode: string | undefined;
+    if (addressButton) {
+      const addressText = await addressButton.textContent();
+      const zipMatch = addressText?.match(/\d{5}/);
+      zipCode = zipMatch ? zipMatch[0] : undefined;
+    }
 
     const sessionInfo: SessionInfo = {
       isLoggedIn,
       userEmail,
       lastUpdated: new Date().toISOString(),
-      zipCode: zipCode?.match(/\d{5}/)?.[0],
-      storeName: storeName?.trim(),
+      zipCode,
+      storeName: undefined,
     };
 
     saveSessionInfo(sessionInfo);
@@ -176,7 +185,7 @@ export async function initiateLogin(): Promise<{ loginUrl: string; instructions:
   const { page, context } = await initBrowser();
 
   try {
-    await page.goto(`${INSTACART_BASE_URL}/login`, { waitUntil: "networkidle", timeout: DEFAULT_TIMEOUT });
+    await page.goto(`${INSTACART_BASE_URL}/login`, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
     await saveCookies(context);
 
     return {
@@ -202,45 +211,71 @@ export async function searchProducts(query: string, maxResults: number = 10): Pr
 
   try {
     const searchUrl = `${INSTACART_BASE_URL}/store/search/${encodeURIComponent(query)}`;
-    await page.goto(searchUrl, { waitUntil: "networkidle", timeout: DEFAULT_TIMEOUT });
+    await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
 
-    // Wait for product results to load
-    await page.waitForSelector('[data-testid="product-card"], .product-card, [class*="ProductCard"]', {
-      timeout: 10000,
+    // Wait for product results to load - Instacart uses group elements with "product card" in aria-label
+    await page.waitForSelector('button[aria-label*="product"]', {
+      timeout: 15000,
     }).catch(() => {
       // No products found
     });
 
-    // Extract product data
+    // Give extra time for dynamic content
+    await page.waitForTimeout(2000);
+
+    // Extract product data using current Instacart DOM structure
     const products = await page.evaluate((max: number) => {
-      const productCards = document.querySelectorAll(
-        '[data-testid="product-card"], .product-card, [class*="ProductCard"], [class*="product-item"]'
-      );
       const results: ProductResult[] = [];
-
-      productCards.forEach((card, index) => {
+      
+      // Find all product card groups - Instacart wraps products in <group> with "product card" in the role
+      const productGroups = document.querySelectorAll('[role="group"][aria-label*="product card"]');
+      
+      productGroups.forEach((group, index) => {
         if (index >= max) return;
-
-        const nameEl = card.querySelector('[data-testid="product-name"], .product-name, [class*="ProductName"], h2, h3');
-        const priceEl = card.querySelector('[data-testid="product-price"], .product-price, [class*="Price"], [class*="price"]');
-        const imageEl = card.querySelector('img');
-        const outOfStock = card.querySelector('[class*="out-of-stock"], [class*="OutOfStock"], [data-testid="out-of-stock"]');
-
-        const name = nameEl?.textContent?.trim() || "Unknown Product";
-        const priceText = priceEl?.textContent?.trim() || "";
         
-        // Extract price - look for dollar amounts
-        const priceMatch = priceText.match(/\$[\d.]+/);
-        const price = priceMatch ? priceMatch[0] : priceText;
-
-        results.push({
-          name,
-          price,
-          pricePerUnit: undefined,
-          imageUrl: imageEl?.src || undefined,
-          productId: card.getAttribute("data-product-id") || undefined,
-          inStock: !outOfStock,
-        });
+        const ariaLabel = group.getAttribute('aria-label') || '';
+        
+        // The aria-label contains the product name like "Banana product card"
+        const name = ariaLabel.replace(' product card', '').trim();
+        
+        // Get the full text content of the group which contains price info
+        const textContent = group.textContent || '';
+        
+        // Extract current price from text pattern: "Current price: $X.XX"
+        const priceMatch = textContent.match(/Current price: \$([\d.]+)/);
+        const price = priceMatch ? `$${priceMatch[1]}` : '';
+        
+        // Extract price per unit: "$X.XX / lb" or similar
+        const perUnitMatch = textContent.match(/\$([\d.]+)\s*\/\s*(lb|oz|ct|each)/i);
+        const pricePerUnit = perUnitMatch ? `$${perUnitMatch[1]} / ${perUnitMatch[2]}` : undefined;
+        
+        // Extract quantity info like "16 oz", "1.7 oz", etc. (before "Add" button text)
+        const quantityMatch = textContent.match(/(\d+(?:\.\d+)?\s*(?:oz|lb|ct))\s*(?:Add|Request|$)/i);
+        const quantity = quantityMatch ? quantityMatch[1].trim() : undefined;
+        
+        // Find image
+        const imageEl = group.querySelector('img') as HTMLImageElement;
+        
+        // Get store name from the nearest retailer group (traverse up to find it)
+        const listItem = group.closest('li');
+        const retailerGroup = listItem?.querySelector('[role="group"][aria-label="retailer"] h3');
+        const storeName = retailerGroup?.textContent?.trim();
+        
+        // Check for out of stock indicators
+        const outOfStock = textContent.toLowerCase().includes('out of stock') || 
+                          textContent.toLowerCase().includes('unavailable');
+        
+        if (name) {
+          results.push({
+            name,
+            price,
+            pricePerUnit,
+            quantity,
+            imageUrl: imageEl?.src || undefined,
+            storeName,
+            inStock: !outOfStock,
+          });
+        }
       });
 
       return results;
@@ -262,58 +297,54 @@ export async function addToCart(productQuery: string, quantity: number = 1): Pro
   try {
     // First search for the product
     const searchUrl = `${INSTACART_BASE_URL}/store/search/${encodeURIComponent(productQuery)}`;
-    await page.goto(searchUrl, { waitUntil: "networkidle", timeout: DEFAULT_TIMEOUT });
+    await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
 
-    // Wait for results
-    await page.waitForSelector('[data-testid="product-card"], .product-card, [class*="ProductCard"]', {
-      timeout: 10000,
+    // Wait for results - look for product card groups
+    await page.waitForSelector('[role="group"][aria-label*="product card"]', {
+      timeout: 15000,
     });
+    
+    await page.waitForTimeout(2000);
 
-    // Click on the first product's add button
-    const addButton = await page.$('[data-testid="add-to-cart"], button:has-text("Add"), [class*="AddToCart"]');
+    // Find the first "Add" button within a product card
+    // Pattern: button "Add 1 banana Banana" or similar with "Add" text
+    const addButton = await page.$('button[aria-label*="Add 1"]');
     
     if (!addButton) {
-      // Try clicking the product card itself first
-      const productCard = await page.$('[data-testid="product-card"], .product-card, [class*="ProductCard"]');
-      if (productCard) {
-        await productCard.click();
-        await page.waitForTimeout(1000);
-        
-        // Now look for add button on product detail page
-        const detailAddButton = await page.waitForSelector(
-          'button:has-text("Add to cart"), [data-testid="add-to-cart-button"]',
-          { timeout: 5000 }
-        ).catch(() => null);
-        
-        if (detailAddButton) {
-          await detailAddButton.click();
-        } else {
-          throw new Error("Could not find add to cart button");
-        }
+      // Fallback: look for any button containing "Add" text
+      const fallbackAddButton = await page.$('button:has-text("Add")');
+      if (fallbackAddButton) {
+        await fallbackAddButton.click();
       } else {
-        throw new Error("No products found for query");
+        throw new Error("No products found for query or could not find Add button");
       }
     } else {
       await addButton.click();
     }
 
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(1500);
 
     // Handle quantity if more than 1
+    // After adding, look for increment button (usually a "+" or aria-label containing "increase" or "add more")
     if (quantity > 1) {
       for (let i = 1; i < quantity; i++) {
-        const incrementButton = await page.$('[data-testid="increment-quantity"], button:has-text("+"), [aria-label*="increase"]');
+        const incrementButton = await page.$('button[aria-label*="Increase"], button[aria-label*="increase"], button[aria-label*="Add 1 more"]');
         if (incrementButton) {
           await incrementButton.click();
-          await page.waitForTimeout(300);
+          await page.waitForTimeout(500);
         }
       }
     }
 
-    // Get current cart count
-    const cartBadge = await page.$('[data-testid="cart-count"], .cart-badge, [class*="CartCount"]');
-    const cartCountText = cartBadge ? await cartBadge.textContent() : null;
-    const cartCount = cartCountText ? parseInt(cartCountText, 10) : undefined;
+    // Get current cart count from the cart button
+    // Pattern: button "View Cart. Items in cart: X"
+    const cartButton = await page.$('button[aria-label*="View Cart"]');
+    let cartCount: number | undefined;
+    if (cartButton) {
+      const cartLabel = await cartButton.getAttribute('aria-label');
+      const countMatch = cartLabel?.match(/Items in cart: (\d+)/);
+      cartCount = countMatch ? parseInt(countMatch[1], 10) : undefined;
+    }
 
     await saveCookies(context);
 
@@ -334,7 +365,7 @@ export async function viewCart(): Promise<CartSummary> {
   const { page, context } = await initBrowser();
 
   try {
-    await page.goto(`${INSTACART_BASE_URL}/store/checkout`, { waitUntil: "networkidle", timeout: DEFAULT_TIMEOUT });
+    await page.goto(`${INSTACART_BASE_URL}/store/checkout`, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
 
     // Wait for cart to load
     await page.waitForTimeout(2000);
@@ -406,7 +437,7 @@ export async function clearCart(): Promise<{ success: boolean; message: string }
   const { page, context } = await initBrowser();
 
   try {
-    await page.goto(`${INSTACART_BASE_URL}/store/checkout`, { waitUntil: "networkidle", timeout: DEFAULT_TIMEOUT });
+    await page.goto(`${INSTACART_BASE_URL}/store/checkout`, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
     await page.waitForTimeout(2000);
 
     // Find and click remove buttons for all items
@@ -447,7 +478,7 @@ export async function previewOrder(): Promise<{
   const { page, context } = await initBrowser();
 
   try {
-    await page.goto(`${INSTACART_BASE_URL}/store/checkout`, { waitUntil: "networkidle", timeout: DEFAULT_TIMEOUT });
+    await page.goto(`${INSTACART_BASE_URL}/store/checkout`, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
     await page.waitForTimeout(2000);
 
     const cart = await viewCart();
@@ -509,7 +540,7 @@ export async function placeOrder(confirmPlacement: boolean): Promise<OrderConfir
 
   try {
     // Navigate to checkout
-    await page.goto(`${INSTACART_BASE_URL}/store/checkout`, { waitUntil: "networkidle", timeout: DEFAULT_TIMEOUT });
+    await page.goto(`${INSTACART_BASE_URL}/store/checkout`, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
     await page.waitForTimeout(2000);
 
     // Verify we can place order
@@ -563,7 +594,7 @@ export async function setDeliveryAddress(address: string): Promise<{ success: bo
   const { page, context } = await initBrowser();
 
   try {
-    await page.goto(INSTACART_BASE_URL, { waitUntil: "networkidle", timeout: DEFAULT_TIMEOUT });
+    await page.goto(INSTACART_BASE_URL, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
 
     // Click on address selector
     const addressSelector = await page.$(
@@ -615,24 +646,35 @@ export async function getAvailableStores(): Promise<{ name: string; deliveryFee?
   const { page, context } = await initBrowser();
 
   try {
-    await page.goto(`${INSTACART_BASE_URL}/store`, { waitUntil: "networkidle", timeout: DEFAULT_TIMEOUT });
-    await page.waitForTimeout(2000);
+    await page.goto(`${INSTACART_BASE_URL}/store`, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
+    await page.waitForTimeout(3000);
 
     const stores = await page.evaluate(() => {
-      const storeCards = document.querySelectorAll(
-        '[data-testid="store-card"], [class*="StoreCard"], [class*="retailer-card"]'
-      );
+      // Look for retailer groups which contain store info
+      // Pattern: group "retailer" containing h3 with store name and delivery info
+      const retailerGroups = document.querySelectorAll('[role="group"][aria-label="retailer"]');
       const results: { name: string; deliveryFee?: string; eta?: string }[] = [];
 
-      storeCards.forEach((card) => {
-        const nameEl = card.querySelector('[data-testid="store-name"], [class*="StoreName"], h2, h3');
-        const feeEl = card.querySelector('[data-testid="delivery-fee"], [class*="DeliveryFee"]');
-        const etaEl = card.querySelector('[data-testid="delivery-eta"], [class*="DeliveryEta"]');
-
+      retailerGroups.forEach((group) => {
+        // Store name is in the h3 heading
+        const nameEl = group.querySelector('h3');
+        const name = nameEl?.textContent?.trim() || "Unknown Store";
+        
+        // Look for delivery info - usually contains "Delivery by" text
+        const allText = group.textContent || '';
+        
+        // Extract delivery ETA: "Delivery by X:XXpm"
+        const etaMatch = allText.match(/Delivery by (\d{1,2}:\d{2}[ap]m)/i);
+        const eta = etaMatch ? `Delivery by ${etaMatch[1]}` : undefined;
+        
+        // Extract distance if present
+        const distanceMatch = allText.match(/([\d.]+\s*mi)/i);
+        const distance = distanceMatch ? distanceMatch[1] : undefined;
+        
         results.push({
-          name: nameEl?.textContent?.trim() || "Unknown Store",
-          deliveryFee: feeEl?.textContent?.trim() || undefined,
-          eta: etaEl?.textContent?.trim() || undefined,
+          name,
+          deliveryFee: undefined, // Fee shown differently on store pages
+          eta: eta ? `${eta}${distance ? ` • ${distance}` : ''}` : undefined,
         });
       });
 
