@@ -1,6 +1,6 @@
 {
   "name": "@striderlabs/mcp-instacart",
-  "version": "0.1.4",
+  "version": "0.2.2",
   "description": "MCP server for Instacart - let AI agents search products, manage cart, and place grocery orders",
   "main": "dist/index.js",
   "bin": {
