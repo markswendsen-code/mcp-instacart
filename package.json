@@ -1,6 +1,6 @@
 {
   "name": "@striderlabs/mcp-instacart",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "MCP server for Instacart - let AI agents search products, manage cart, and place grocery orders",
   "main": "dist/index.js",
   "bin": {
@@ -14,14 +14,16 @@
   "keywords": [
     "mcp",
     "instacart",
-    "grocery",
-    "shopping",
+    "grocery shopping",
+    "grocery delivery",
+    "supermarket automation",
+    "food-delivery",
     "ai-agent",
-    "strider",
+    "autonomous-agent",
+    "personal-agent",
+    "agent-commerce",
     "model-context-protocol",
-    "browser-automation",
-    "patchright",
-    "stealth"
+    "browser-automation"
   ],
   "author": "Strider Labs <hello@striderlabs.ai>",
   "license": "MIT",
