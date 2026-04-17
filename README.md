@@ -58,10 +58,10 @@ Add to your `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ## Metrics
 
-- **Weekly downloads:** 63 (Apr 3-9, 2026) — Top grocery connector
+- **Weekly downloads:** 271 (Apr 10-17, 2026) — Top grocery connector (+330% growth)
 - **Status:** ✅ Live in production
 - **Reliability:** 85%+ task completion rate
-- **Discovery:** npm, Claude Plugins, mcpservers.org, ClawHub, PulseMCP
+- **Discovery:** npm, mcpservers.org, ClawHub, PulseMCP, Glama, LobeHub
 
 ## Available Elsewhere
 
