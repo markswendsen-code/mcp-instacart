@@ -1,0 +1,25 @@
+{
+  "name": "striderlabs-instacart",
+  "description": "Order groceries with Instacart. Let AI agents search products, browse stores, and place delivery orders.",
+  "version": "0.1.4",
+  "author": {
+    "name": "Strider Labs",
+    "email": "hello@striderlabs.ai",
+    "url": "https://striderlabs.ai"
+  },
+  "homepage": "https://striderlabs.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/markswendsen-code/mcp-instacart"
+  },
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "instacart",
+    "grocery",
+    "shopping",
+    "ai-agent",
+    "automation",
+    "delivery"
+  ]
+}
