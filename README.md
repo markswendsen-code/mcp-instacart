@@ -128,14 +128,43 @@ status = track_order({ order_id: order.order_id })
 - Fallback paths for failures
 - 24/7 monitoring + alerting
 
+## Authentication
+
+The MCP server uses a **persistent browser profile** (`~/.strider/instacart/browser-profile`) so your login session survives server restarts automatically.
+
+### First-time login
+
+1. Set `INSTACART_HEADLESS=false` in your MCP server config so the browser window is visible:
+
+```json
+{
+  "mcpServers": {
+    "instacart": {
+      "command": "npx",
+      "args": ["-y", "@striderlabs/mcp-instacart"],
+      "env": { "INSTACART_HEADLESS": "false" }
+    }
+  }
+}
+```
+
+2. Restart Claude / your MCP client.
+3. Ask Claude to run `instacart_login` — a real browser window will open.
+4. Log in to Instacart inside that window.
+5. Run `instacart_status` to confirm authentication.
+6. Remove `INSTACART_HEADLESS` (or set it back to `true`) and restart — the saved profile keeps you logged in.
+
+### How login detection works
+
+Authentication is verified by navigating to `/account` and confirming the page resolves without a redirect to `/login` or `/authentication` (positive detection). This is more reliable than checking for the absence of a "Log in" button.
+
 ## Configuration
 
 ### Environment Variables
 
 ```bash
-# Optional: Use a specific Instacart account
-INSTACART_EMAIL=your-email@example.com
-INSTACART_PASSWORD=your-password  # Highly recommend using .env file
+# Show browser window (required for first-time login)
+INSTACART_HEADLESS=false   # default: true (headless)
 ```
 
 ### Self-Hosted

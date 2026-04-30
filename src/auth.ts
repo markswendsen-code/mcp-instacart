@@ -12,6 +12,7 @@ import type { BrowserContext, Cookie } from "patchright";
 const CONFIG_DIR = path.join(os.homedir(), ".strider", "instacart");
 const COOKIES_FILE = path.join(CONFIG_DIR, "cookies.json");
 const SESSION_FILE = path.join(CONFIG_DIR, "session.json");
+export const BROWSER_PROFILE_DIR = path.join(CONFIG_DIR, "browser-profile");
 
 export interface SessionInfo {
   isLoggedIn: boolean;
@@ -92,7 +93,7 @@ export function loadSessionInfo(): SessionInfo | null {
 }
 
 /**
- * Clear all saved auth data
+ * Clear all saved auth data including browser profile
  */
 export function clearAuthData(): void {
   if (fs.existsSync(COOKIES_FILE)) {
@@ -100,6 +101,9 @@ export function clearAuthData(): void {
   }
   if (fs.existsSync(SESSION_FILE)) {
     fs.unlinkSync(SESSION_FILE);
+  }
+  if (fs.existsSync(BROWSER_PROFILE_DIR)) {
+    fs.rmSync(BROWSER_PROFILE_DIR, { recursive: true, force: true });
   }
 }
 
