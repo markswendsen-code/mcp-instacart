@@ -232,8 +232,9 @@ export async function searchProducts(query: string, maxResults: number = 10): Pr
     const searchUrl = `${INSTACART_BASE_URL}/store/search/${encodeURIComponent(query)}`;
     await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
 
-    // Wait for product results to load - Instacart uses group elements with "product card" in aria-label
-    await page.waitForSelector('button[aria-label*="product"]', {
+    // Wait for product results to load - Instacart uses li elements with data-testid starting with "item_list_item_items_"
+    // Fallback to legacy selectors for compatibility
+    await page.waitForSelector('li[data-testid^="item_list_item_items_"], [role="group"][aria-label*="product card"]', {
       timeout: 15000,
     }).catch(() => {
       // No products found
@@ -242,47 +243,90 @@ export async function searchProducts(query: string, maxResults: number = 10): Pr
     // Give extra time for dynamic content
     await page.waitForTimeout(2000);
 
-    // Extract product data using current Instacart DOM structure
+    // Extract product data using current Instacart DOM structure (April 2026)
     const products = await page.evaluate((max: number) => {
       const results: ProductResult[] = [];
 
-      // Find all product card groups - Instacart wraps products in <group> with "product card" in the role
-      const productGroups = document.querySelectorAll('[role="group"][aria-label*="product card"]');
+      // Primary selector: modern Instacart DOM uses li with data-testid="item_list_item_items_*"
+      let productItems = document.querySelectorAll('li[data-testid^="item_list_item_items_"]');
 
-      productGroups.forEach((group, index) => {
+      // Fallback to legacy selector if modern selector returns nothing
+      if (productItems.length === 0) {
+        productItems = document.querySelectorAll('[role="group"][aria-label*="product card"]');
+      }
+
+      productItems.forEach((item, index) => {
         if (index >= max) return;
 
-        const ariaLabel = group.getAttribute('aria-label') || '';
+        // Try multiple approaches to extract product name
+        let name = '';
 
-        // The aria-label contains the product name like "Banana product card"
-        const name = ariaLabel.replace(' product card', '').trim();
+        // Modern: Look for product name in aria-label of Add button or in heading/span elements
+        const addButton = item.querySelector('button[aria-label^="Add "]');
+        if (addButton) {
+          const ariaLabel = addButton.getAttribute('aria-label') || '';
+          // aria-label format: "Add 1, Product Name, $X.XX, ..."
+          const parts = ariaLabel.split(',');
+          if (parts.length >= 2) {
+            name = parts[1].trim();
+          }
+        }
 
-        // Get the full text content of the group which contains price info
-        const textContent = group.textContent || '';
+        // Fallback: Look for product name in common text containers
+        if (!name) {
+          const nameEl = item.querySelector('[data-testid*="name"], [class*="ItemName"], h3, h4');
+          name = nameEl?.textContent?.trim() || '';
+        }
 
-        // Extract current price from text pattern: "Current price: $X.XX"
-        const priceMatch = textContent.match(/Current price: \$([\d.]+)/);
-        const price = priceMatch ? `$${priceMatch[1]}` : '';
+        // Legacy fallback: aria-label on group element
+        if (!name) {
+          const ariaLabel = item.getAttribute('aria-label') || '';
+          name = ariaLabel.replace(' product card', '').trim();
+        }
 
-        // Extract price per unit: "$X.XX / lb" or similar
-        const perUnitMatch = textContent.match(/\$([\d.]+)\s*\/\s*(lb|oz|ct|each)/i);
+        // Get the full text content for price extraction
+        const textContent = item.textContent || '';
+
+        // Extract price - look for common patterns
+        let price = '';
+        // Pattern 1: "Current price: $X.XX"
+        const currentPriceMatch = textContent.match(/Current price:?\s*\$?([\d.]+)/i);
+        // Pattern 2: Just "$X.XX" (most common)
+        const simplePriceMatch = textContent.match(/\$([\d]+\.[\d]{2})/);
+
+        if (currentPriceMatch) {
+          price = `$${currentPriceMatch[1]}`;
+        } else if (simplePriceMatch) {
+          price = `$${simplePriceMatch[1]}`;
+        }
+
+        // Extract price per unit: "$X.XX / lb" or "$X.XX/lb" or similar
+        const perUnitMatch = textContent.match(/\$([\d.]+)\s*\/?\s*(lb|oz|ct|each|ea)/i);
         const pricePerUnit = perUnitMatch ? `$${perUnitMatch[1]} / ${perUnitMatch[2]}` : undefined;
 
-        // Extract quantity info like "16 oz", "1.7 oz", etc. (before "Add" button text)
-        const quantityMatch = textContent.match(/(\d+(?:\.\d+)?\s*(?:oz|lb|ct))\s*(?:Add|Request|$)/i);
+        // Extract quantity info like "16 oz", "1.7 oz", "1 lb" etc.
+        const quantityMatch = textContent.match(/(\d+(?:\.\d+)?\s*(?:oz|lb|ct|fl oz|gal|pt|qt))/i);
         const quantity = quantityMatch ? quantityMatch[1].trim() : undefined;
 
         // Find image
-        const imageEl = group.querySelector('img') as HTMLImageElement;
+        const imageEl = item.querySelector('img') as HTMLImageElement;
 
-        // Get store name from the nearest retailer group (traverse up to find it)
-        const listItem = group.closest('li');
-        const retailerGroup = listItem?.querySelector('[role="group"][aria-label="retailer"] h3');
-        const storeName = retailerGroup?.textContent?.trim();
+        // Get store name - look for retailer info in parent or sibling elements
+        let storeName: string | undefined;
+        const retailerEl = item.querySelector('[data-testid*="retailer"], [aria-label="retailer"] h3');
+        if (retailerEl) {
+          storeName = retailerEl.textContent?.trim();
+        } else {
+          // Try finding retailer in parent context
+          const parentSection = item.closest('section, [data-testid*="store"]');
+          const storeNameEl = parentSection?.querySelector('h2, h3, [data-testid*="store-name"]');
+          storeName = storeNameEl?.textContent?.trim();
+        }
 
         // Check for out of stock indicators
         const outOfStock = textContent.toLowerCase().includes('out of stock') ||
-                          textContent.toLowerCase().includes('unavailable');
+                          textContent.toLowerCase().includes('unavailable') ||
+                          textContent.toLowerCase().includes('sold out');
 
         if (name) {
           results.push({
@@ -317,19 +361,24 @@ export async function addToCart(productQuery: string, quantity: number = 1): Pro
     const searchUrl = `${INSTACART_BASE_URL}/store/search/${encodeURIComponent(productQuery)}`;
     await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
 
-    // Wait for results - look for product card groups
-    await page.waitForSelector('[role="group"][aria-label*="product card"]', {
+    // Wait for results - modern selector uses li with data-testid, fallback to legacy
+    await page.waitForSelector('li[data-testid^="item_list_item_items_"], [role="group"][aria-label*="product card"]', {
       timeout: 15000,
     });
 
     await page.waitForTimeout(2000);
 
-    // Find the first "Add" button within a product card
-    // Pattern: button "Add 1 banana Banana" or similar with "Add" text
-    const addButton = await page.$('button[aria-label*="Add 1"]');
+    // Find the first "Add" button - modern Instacart uses aria-label starting with "Add "
+    // Pattern: "Add 1, Banana, $0.25, each" or similar
+    let addButton = await page.$('button[aria-label^="Add "]');
+
+    // Fallback to legacy patterns if modern selector fails
+    if (!addButton) {
+      addButton = await page.$('button[aria-label*="Add 1"]');
+    }
 
     if (!addButton) {
-      // Fallback: look for any button containing "Add" text
+      // Last resort: look for any button containing "Add" text
       const fallbackAddButton = await page.$('button:has-text("Add")');
       if (fallbackAddButton) {
         await fallbackAddButton.click();
@@ -642,29 +691,82 @@ export async function getAvailableStores(): Promise<{ name: string; deliveryFee?
     await page.waitForTimeout(3000);
 
     const stores = await page.evaluate(() => {
-      const retailerGroups = document.querySelectorAll('[role="group"][aria-label="retailer"]');
       const results: { name: string; deliveryFee?: string; eta?: string }[] = [];
 
-      retailerGroups.forEach((group) => {
-        const nameEl = group.querySelector('h3');
-        const name = nameEl?.textContent?.trim() || "Unknown Store";
+      // Modern selector: look for store cards with data-testid or links containing store paths
+      let retailerElements = document.querySelectorAll('[data-testid*="store"], [data-testid*="retailer"]');
 
-        const allText = group.textContent || '';
+      // Fallback to legacy selector
+      if (retailerElements.length === 0) {
+        retailerElements = document.querySelectorAll('[role="group"][aria-label="retailer"]');
+      }
 
-        const etaMatch = allText.match(/Delivery by (\d{1,2}:\d{2}[ap]m)/i);
-        const eta = etaMatch ? `Delivery by ${etaMatch[1]}` : undefined;
+      // Additional fallback: look for anchor tags linking to stores
+      if (retailerElements.length === 0) {
+        retailerElements = document.querySelectorAll('a[href*="/store/"]');
+      }
 
+      retailerElements.forEach((el) => {
+        // Try multiple approaches to get store name
+        let name = '';
+
+        // Modern: Look for heading elements
+        const headingEl = el.querySelector('h2, h3, h4, [data-testid*="name"]');
+        if (headingEl) {
+          name = headingEl.textContent?.trim() || '';
+        }
+
+        // Fallback: aria-label or title attribute
+        if (!name) {
+          name = el.getAttribute('aria-label') || el.getAttribute('title') || '';
+        }
+
+        // Last resort: first significant text content
+        if (!name && el.textContent) {
+          const text = el.textContent.trim();
+          // Take first line or first 50 chars
+          const firstLine = text.split('\n')[0].trim();
+          name = firstLine.substring(0, 50);
+        }
+
+        if (!name || name === 'Unknown Store') {
+          return; // Skip this element
+        }
+
+        const allText = el.textContent || '';
+
+        // Extract delivery time
+        const etaMatch = allText.match(/Delivery by (\d{1,2}:\d{2}\s*[ap]m)/i) ||
+                        allText.match(/(\d{1,2}:\d{2}\s*[ap]m)/i) ||
+                        allText.match(/(in \d+ min)/i);
+        const eta = etaMatch ? etaMatch[1] : undefined;
+
+        // Extract distance
         const distanceMatch = allText.match(/([\d.]+\s*mi)/i);
         const distance = distanceMatch ? distanceMatch[1] : undefined;
 
+        // Extract delivery fee
+        const feeMatch = allText.match(/(\$[\d.]+)\s*delivery/i) ||
+                        allText.match(/delivery[:\s]*(\$[\d.]+)/i) ||
+                        allText.match(/Free delivery/i);
+        const deliveryFee = feeMatch
+          ? (feeMatch[0].toLowerCase().includes('free') ? 'Free' : feeMatch[1])
+          : undefined;
+
         results.push({
           name,
-          deliveryFee: undefined,
-          eta: eta ? `${eta}${distance ? ` • ${distance}` : ''}` : undefined,
+          deliveryFee,
+          eta: eta ? `${eta}${distance ? ` • ${distance}` : ''}` : (distance || undefined),
         });
       });
 
-      return results;
+      // Deduplicate by store name
+      const seen = new Set<string>();
+      return results.filter((store) => {
+        if (seen.has(store.name)) return false;
+        seen.add(store.name);
+        return true;
+      });
     });
 
     return stores;

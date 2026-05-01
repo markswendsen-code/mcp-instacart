@@ -1,6 +1,6 @@
 {
   "name": "@striderlabs/mcp-instacart",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Autonomous grocery shopping via Instacart. Let your AI agent search products, manage shopping lists, apply discounts, and complete orders. Persistent session management for recurring grocery runs. Production-ready MCP server for personal agents.",
   "main": "dist/index.js",
   "bin": {
