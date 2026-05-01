@@ -120,3 +120,48 @@ export function hasSavedCookies(): boolean {
 export function getConfigDir(): string {
   return CONFIG_DIR;
 }
+
+/**
+ * Load auth cookies from environment variables.
+ * Supports INSTACART_AUTH_TOKEN and INSTACART_SESSION_ID.
+ * Returns an array of Cookie objects ready for context.addCookies(), or null if neither env var is set.
+ */
+export function loadEnvVarAuth(): Cookie[] | null {
+  const authToken = process.env.INSTACART_AUTH_TOKEN;
+  const sessionId = process.env.INSTACART_SESSION_ID;
+
+  if (!authToken && !sessionId) {
+    return null;
+  }
+
+  const cookies: Cookie[] = [];
+  const farFuture = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 365; // 1 year
+
+  if (authToken) {
+    cookies.push({
+      name: "instacart_auth_token",
+      value: authToken,
+      domain: ".instacart.com",
+      path: "/",
+      expires: farFuture,
+      httpOnly: true,
+      secure: true,
+      sameSite: "Lax",
+    });
+  }
+
+  if (sessionId) {
+    cookies.push({
+      name: "session_token",
+      value: sessionId,
+      domain: ".instacart.com",
+      path: "/",
+      expires: farFuture,
+      httpOnly: true,
+      secure: true,
+      sameSite: "Lax",
+    });
+  }
+
+  return cookies;
+}

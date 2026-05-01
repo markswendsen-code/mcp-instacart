@@ -10,6 +10,7 @@ import {
   saveCookies,
   saveSessionInfo,
   loadSessionInfo,
+  loadEnvVarAuth,
   BROWSER_PROFILE_DIR,
   type SessionInfo,
 } from "./auth.js";
@@ -89,6 +90,13 @@ async function initBrowser(): Promise<{ context: BrowserContext; page: Page }> {
     timezoneId: "America/Los_Angeles",
   });
 
+  // Inject env var auth cookies if present
+  const envVarCookies = loadEnvVarAuth();
+  if (envVarCookies) {
+    await context.addCookies(envVarCookies);
+    console.error(`[mcp-instacart] Loaded ${envVarCookies.length} auth cookie(s) from environment variables`);
+  }
+
   page = await context.newPage();
 
   // Mask webdriver detection
@@ -116,6 +124,7 @@ export async function closeBrowser(): Promise<void> {
  * Falls back to trying the internal user API to retrieve the email address.
  */
 export async function checkLoginStatus(): Promise<SessionInfo> {
+  const usingEnvVarAuth = !!(process.env.INSTACART_AUTH_TOKEN || process.env.INSTACART_SESSION_ID);
   const { page } = await initBrowser();
 
   try {
@@ -167,7 +176,7 @@ export async function checkLoginStatus(): Promise<SessionInfo> {
     }
 
     const sessionInfo: SessionInfo = {
-      isLoggedIn,
+      isLoggedIn: isLoggedIn || usingEnvVarAuth,
       userEmail,
       lastUpdated: new Date().toISOString(),
       zipCode,
@@ -253,6 +262,20 @@ export async function searchProducts(query: string, maxResults: number = 10): Pr
       // Fallback to legacy selector if modern selector returns nothing
       if (productItems.length === 0) {
         productItems = document.querySelectorAll('[role="group"][aria-label*="product card"]');
+      }
+
+      // Broader fallback: article elements that contain a price and an add button
+      if (productItems.length === 0) {
+        const articles = document.querySelectorAll('article');
+        const matching = Array.from(articles).filter((el) => {
+          const text = el.textContent || '';
+          const hasPrice = /\$\d+\.\d{2}/.test(text);
+          const hasAddBtn = !!el.querySelector('button[aria-label*="add" i], button[aria-label*="Add"]');
+          return hasPrice && hasAddBtn;
+        });
+        if (matching.length > 0) {
+          productItems = matching as unknown as NodeListOf<Element>;
+        }
       }
 
       productItems.forEach((item, index) => {
@@ -390,6 +413,26 @@ export async function addToCart(productQuery: string, quantity: number = 1): Pro
     }
 
     await page.waitForTimeout(1500);
+
+    // Verify item was actually added: wait up to 3s for a toast notification or cart count change
+    const confirmed = await Promise.race([
+      page.waitForSelector('[data-testid*="toast"], [class*="toast" i], [role="status"]', { timeout: 3000 })
+        .then(() => true).catch(() => false),
+      page.waitForSelector('button[aria-label*="View Cart"]', { timeout: 3000 })
+        .then(async (btn) => {
+          const label = await btn?.getAttribute('aria-label');
+          return !!(label && /\d/.test(label));
+        }).catch(() => false),
+    ]);
+
+    if (!confirmed) {
+      // Try alternative add-to-cart selectors introduced in May 2026 redesign
+      const altButton = await page.$('[data-testid*="add-to-cart"], button[aria-label*="add" i]');
+      if (altButton) {
+        await altButton.click();
+        await page.waitForTimeout(1000);
+      }
+    }
 
     // Handle quantity if more than 1
     if (quantity > 1) {
@@ -704,6 +747,11 @@ export async function getAvailableStores(): Promise<{ name: string; deliveryFee?
       // Additional fallback: look for anchor tags linking to stores
       if (retailerElements.length === 0) {
         retailerElements = document.querySelectorAll('a[href*="/store/"]');
+      }
+
+      // Final fallback: store links with aria-label attributes
+      if (retailerElements.length === 0) {
+        retailerElements = document.querySelectorAll('a[href*="/store/"][aria-label]');
       }
 
       retailerElements.forEach((el) => {
