@@ -255,13 +255,11 @@ export async function searchProducts(query: string, maxResults: number = 10): Pr
     const searchUrl = `${INSTACART_BASE_URL}/store/search/${encodeURIComponent(query)}`;
     await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
 
-    // Wait for product results to load - Instacart uses li elements with data-testid starting with "item_list_item_items_"
-    // Fallback to legacy selectors for compatibility
-    await page.waitForSelector('li[data-testid^="item_list_item_items_"], [role="group"][aria-label*="product card"]', {
-      timeout: 15000,
-    }).catch(() => {
-      // No products found
-    });
+    // Wait for product results — covers both the new [role="region"] structure and legacy selectors
+    await page.waitForSelector(
+      '[role="region"][aria-label^="Results for"] li, li[data-testid^="item_list_item_items_"], [role="group"][aria-label*="product card"]',
+      { timeout: 15000 }
+    ).catch(() => {});
 
     // Give extra time for dynamic content
     await page.waitForTimeout(2000);
@@ -687,24 +685,13 @@ export async function setDeliveryAddress(address: string): Promise<{ success: bo
     await page.goto(INSTACART_BASE_URL, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
     await page.waitForTimeout(2000);
 
-    // Try clicking the address/location picker to open the modal
-    const addressTriggerSelectors = [
-      '[data-testid="address-selector"]',
-      '[aria-label*="delivery address"]',
-      '[aria-label*="location" i]',
-      'button[aria-label*="zip" i]',
-      '[class*="AddressSelector"]',
-      'button:has-text("Enter zip code")',
-      'button:has-text("zip")',
-    ];
-
-    for (const sel of addressTriggerSelectors) {
-      const el = await page.$(sel);
-      if (el) {
-        await el.click({ force: true });
-        await page.waitForTimeout(800);
-        break;
-      }
+    // Click the address/location picker to open the modal
+    const triggerEl = await page.$(
+      '[data-testid="address-selector"], [aria-label*="delivery address"], [aria-label*="location" i], button[aria-label*="zip" i], [class*="AddressSelector"], button:has-text("Enter zip code"), button:has-text("zip")'
+    );
+    if (triggerEl) {
+      await triggerEl.click({ force: true });
+      await page.waitForTimeout(800);
     }
 
     // Wait for address input to become visible (may be inside a modal)
@@ -785,7 +772,8 @@ export async function getAvailableStores(): Promise<StoreResult[]> {
         const anchor = el.tagName === 'A' ? el as HTMLAnchorElement : el.querySelector('a[href*="/store/"]') as HTMLAnchorElement | null;
         if (anchor) {
           const slugMatch = anchor.getAttribute('href')?.match(/\/store\/([^\/\?#]+)/);
-          if (slugMatch && slugMatch[1] !== 'search') slug = slugMatch[1];
+          const EXCLUDED_SEGMENTS = new Set(['search', 'checkout', 'account', 'settings', 'help', 'browse']);
+          if (slugMatch && !EXCLUDED_SEGMENTS.has(slugMatch[1])) slug = slugMatch[1];
         }
 
         if (name === '_from_slug') {
@@ -841,9 +829,10 @@ export async function searchProductsInStore(query: string, storeSlug: string, ma
     const searchUrl = `${INSTACART_BASE_URL}/store/${storeSlug}/search/${encodeURIComponent(query)}`;
     await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT });
 
+    // 5 s timeout: called once per store in a loop; 15 s × N stores compounds too slowly
     await page.waitForSelector(
-      '[role="region"][aria-label^="Results for"], li[data-testid^="item_list_item_items_"]',
-      { timeout: 15000 }
+      '[role="region"][aria-label^="Results for"] li, li[data-testid^="item_list_item_items_"]',
+      { timeout: 5000 }
     ).catch(() => {});
 
     await page.waitForTimeout(2000);
@@ -918,12 +907,14 @@ export async function searchProductsInStore(query: string, storeSlug: string, ma
         const quantityMatch = textContent.match(/(\d+(?:\.\d+)?\s*(?:oz|lb|ct|fl oz|gal|pt|qt))/i);
         const quantity = quantityMatch ? quantityMatch[1].trim() : undefined;
 
+        const imageEl = item.querySelector('img') as HTMLImageElement;
+
         const outOfStock = textContent.toLowerCase().includes('out of stock') ||
           textContent.toLowerCase().includes('unavailable') ||
           textContent.toLowerCase().includes('sold out');
 
         if (name) {
-          results.push({ name, price, pricePerUnit, quantity, storeName: args.storeName, storeSlug: args.slug, inStock: !outOfStock });
+          results.push({ name, price, pricePerUnit, quantity, imageUrl: imageEl?.src || undefined, storeName: args.storeName, storeSlug: args.slug, inStock: !outOfStock });
         }
       });
 
@@ -950,6 +941,7 @@ export async function compareProductPrices(query: string, maxResultsPerStore: nu
   }
 
   const allResults: ProductResult[] = [];
+  // Sequential — all store searches share a single browser page; do not parallelise.
   for (const store of storesWithSlug) {
     try {
       const products = await searchProductsInStore(query, store.slug!, maxResultsPerStore);
@@ -959,11 +951,11 @@ export async function compareProductPrices(query: string, maxResultsPerStore: nu
     }
   }
 
-  // Sort by numeric price ascending
+  // Sort by numeric price ascending; items with no parseable price go to the end
   allResults.sort((a, b) => {
-    const priceA = parseFloat((a.price || '$999').replace('$', '')) || 999;
-    const priceB = parseFloat((b.price || '$999').replace('$', '')) || 999;
-    return priceA - priceB;
+    const priceA = parseFloat((a.price || '').replace('$', ''));
+    const priceB = parseFloat((b.price || '').replace('$', ''));
+    return (isNaN(priceA) ? Infinity : priceA) - (isNaN(priceB) ? Infinity : priceB);
   });
 
   return { stores: storesWithSlug, products: allResults };
