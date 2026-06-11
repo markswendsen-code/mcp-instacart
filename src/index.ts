@@ -19,6 +19,8 @@ import {
   checkLoginStatus,
   initiateLogin,
   searchProducts,
+  searchProductsInStore,
+  compareProductPrices,
   addToCart,
   viewCart,
   clearCart,
@@ -176,6 +178,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {},
+        },
+      },
+      {
+        name: "instacart_compare_prices",
+        description:
+          "Compare prices for a product across all available stores near you. Returns results sorted cheapest-first with store name and price-per-unit on each result.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description: "Product to search for (e.g., 'chicken thighs', 'Greek yogurt')",
+            },
+            maxResultsPerStore: {
+              type: "number",
+              description: "Max results to fetch per store (default: 3)",
+            },
+          },
+          required: ["query"],
         },
       },
     ],
@@ -465,6 +486,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                   success: true,
                   count: stores.length,
                   stores,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+
+      case "instacart_compare_prices": {
+        const { query, maxResultsPerStore = 3 } = args as { query: string; maxResultsPerStore?: number };
+        const result = await compareProductPrices(query, maxResultsPerStore);
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  success: true,
+                  query,
+                  storesSearched: result.stores.length,
+                  totalResults: result.products.length,
+                  note: result.note,
+                  products: result.products,
                 },
                 null,
                 2
